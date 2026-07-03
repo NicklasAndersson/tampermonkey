@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Vinbetyget × Systembolaget
 // @namespace    http://tampermonkey.net/
-// @version      1.2.0
+// @version      1.2.1
 // @description  Visar lagerstatus i din Systembolaget-butik direkt på Vinbetygets topplistor
 // @match        https://vinbetyget.se/*
 // @grant        GM_xmlhttpRequest
@@ -22,7 +22,7 @@
 //   → hitta SB-URL (a[href*="systembolaget.se/produkt"], i DOM eller i
 //     hämtad HTML på listsidor)
 //   → artikelnr ur URL-slugen ("...-207701/" → "207701")
-//   → productsearch?q=<artikelnr> → internt productId (t.ex. "1401")
+//   → productsearch?textQuery=<artikelnr> → internt productId (t.ex. "1401")
 //   → stockbalance/store/<STORE_ID>/<productId>/ → { stock, shelf }
 //
 // ── Kända fallgropar i Systembolagets externa API ────────────
@@ -33,12 +33,13 @@
 //   måste slås upp via productsearch först.
 // - Det finns ingen `stockbalance/product?productNumber=X` — ger alltid 404.
 //   Rätt path är `stockbalance/store/{siteId}/{productId}/`.
-// - productsearch/search?q=... verkar (2026-07-03) ignorera query-parametern
-//   helt vid anrop utan sidans sessions-cookies (vilket GM_xmlhttpRequest
-//   inte skickar) — den returnerar då alltid samma förstaträff oavsett vad
-//   q är. Symptom: alla badges visar exakt samma saldo/hylla. Se
-//   resolveProductId() nedan — vi litar därför INTE på ett obekräftat
-//   products[0]-resultat, utan visar hellre "?" än fel saldo.
+// - Fritextparametern till productsearch/search heter `textQuery`, INTE `q`.
+//   Med `q` (2026-07-03, upptäckt via github.com/AlexGustafsson/
+//   systembolaget-api sin search.go) ignoreras parametern helt och API:t
+//   svarar alltid med samma odiskriminerade förstasida i sortimentet —
+//   symptom: alla badges visade exakt samma saldo/hylla oavsett vin. Se
+//   resolveProductId() nedan, som ändå behåller en exakt match-koll som
+//   skyddsnät mot att en framtida API-ändring återupprepar detta tyst.
 // - API-nyckeln nedan är hårdkodad ur SB:s egen JS-bundle. Om anropen
 //   plötsligt börjar ge 401/403 har den roterats och behöver hämtas ur
 //   en ny bundle-fil (leta efter "ocp-apim-subscription-key" i Network-
@@ -250,16 +251,17 @@
   // Steg 2: slå upp internt productId via productsearch
   // (207701 på hemsidan ≠ productId som stockbalance förstår, t.ex. "1401")
   //
-  // OBS: sök-API:et har setts returnera en obekräftad, orelaterad förstaträff
-  // (se fallgrops-listan högst upp i filen) istället för ett fel när det inte
-  // hittar artikelnumret. Om vi litade på den träffen blint skulle alla
-  // badges kunna visa exakt samma (felaktiga) produkts saldo. Vi kräver
-  // därför en exakt matchning på productNumber/productId — annars null,
-  // vilket gör att badgen blir "?" istället för ett falskt saldo.
+  // OBS: fritextparametern heter `textQuery`, INTE `q`. Källa:
+  // github.com/AlexGustafsson/systembolaget-api (search.go, FilterByQuery).
+  // Med `q` ignoreras parametern helt och API:t svarar alltid med samma
+  // odiskriminerade förstasida i sortimentet — vilket tidigare gjorde att
+  // alla badges visade exakt samma (felaktiga) saldo. Vi behåller ändå en
+  // exakt match-koll som skyddsnät: om API:t någon gång skulle svara med
+  // en orelaterad förstaträff igen blir badgen "?" istället för fel saldo.
   async function resolveProductId(articleNr) {
     if (articleNr in idCache) return idCache[articleNr];
 
-    const data = await apiGet(`/productsearch/search?q=${articleNr}&size=5`);
+    const data = await apiGet(`/productsearch/search?textQuery=${articleNr}&size=5`);
     const hit  = data?.products?.find(p =>
       p.productNumber === articleNr || String(p.productId) === articleNr
     );
