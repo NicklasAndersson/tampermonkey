@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Vinbetyget × Systembolaget
 // @namespace    http://tampermonkey.net/
-// @version      1.1.0
+// @version      1.2.0
 // @description  Visar lagerstatus i din Systembolaget-butik direkt på Vinbetygets topplistor
 // @match        https://vinbetyget.se/*
 // @grant        GM_xmlhttpRequest
@@ -17,11 +17,37 @@
 // @updateURL    https://raw.githubusercontent.com/NicklasAndersson/tampermonkey/main/vinbetyget.js
 // ==/UserScript==
 
+// ── Flödet ──────────────────────────────────────────────────
+// Vinbetyget-sida
+//   → hitta SB-URL (a[href*="systembolaget.se/produkt"], i DOM eller i
+//     hämtad HTML på listsidor)
+//   → artikelnr ur URL-slugen ("...-207701/" → "207701")
+//   → productsearch?q=<artikelnr> → internt productId (t.ex. "1401")
+//   → stockbalance/store/<STORE_ID>/<productId>/ → { stock, shelf }
+//
+// ── Kända fallgropar i Systembolagets externa API ────────────
+// - `isInStoreAssortment` betyder INTE "säljs i den här butiken" — kolla
+//   bara stock > 0.
+// - Artikelnumret i SB:s egen URL (t.ex. 207701) är INTE samma ID som
+//   stockbalance-endpointen vill ha. Det interna productId (t.ex. "1401")
+//   måste slås upp via productsearch först.
+// - Det finns ingen `stockbalance/product?productNumber=X` — ger alltid 404.
+//   Rätt path är `stockbalance/store/{siteId}/{productId}/`.
+// - productsearch/search?q=... verkar (2026-07-03) ignorera query-parametern
+//   helt vid anrop utan sidans sessions-cookies (vilket GM_xmlhttpRequest
+//   inte skickar) — den returnerar då alltid samma förstaträff oavsett vad
+//   q är. Symptom: alla badges visar exakt samma saldo/hylla. Se
+//   resolveProductId() nedan — vi litar därför INTE på ett obekräftat
+//   products[0]-resultat, utan visar hellre "?" än fel saldo.
+// - API-nyckeln nedan är hårdkodad ur SB:s egen JS-bundle. Om anropen
+//   plötsligt börjar ge 401/403 har den roterats och behöver hämtas ur
+//   en ny bundle-fil (leta efter "ocp-apim-subscription-key" i Network-
+//   fliken på systembolaget.se).
 (async function () {
   'use strict';
 
   // ── Config ────────────────────────────────────────────────
-  let STORE_ID   = GM_getValue('storeId',   '');
+  let STORE_ID   = GM_getValue('storeId',   '');   // Systembolagets siteId, t.ex. "0235" (Kungsängen)
   let STORE_NAME = GM_getValue('storeName', '');
   const API_KEY  = '8d39a7340ee7439f8b4c1e995c8f3e4a';
   const STORES_URL = 'https://cdn.jsdelivr.net/gh/AlexGustafsson/systembolaget-api-data@main/data/stores.json';
@@ -186,6 +212,8 @@
   }
 
   // ── HTTP ──────────────────────────────────────────────────
+  // Rått GET (utan JSON-parse) — används för att hämta HTML-sidor
+  // (vinbetyget-sidor, stores.json).
   function gmGet(url) {
     return new Promise(res => GM_xmlhttpRequest({
       method: 'GET', url, timeout: 10000,
@@ -194,6 +222,8 @@
     }));
   }
 
+  // GET mot Systembolagets externa e-handels-API, JSON-parsat.
+  // `path` ska börja med "/", t.ex. "/stockbalance/store/0235/1401/".
   function apiGet(path) {
     return new Promise(res => GM_xmlhttpRequest({
       method: 'GET',
@@ -219,29 +249,37 @@
 
   // Steg 2: slå upp internt productId via productsearch
   // (207701 på hemsidan ≠ productId som stockbalance förstår, t.ex. "1401")
+  //
+  // OBS: sök-API:et har setts returnera en obekräftad, orelaterad förstaträff
+  // (se fallgrops-listan högst upp i filen) istället för ett fel när det inte
+  // hittar artikelnumret. Om vi litade på den träffen blint skulle alla
+  // badges kunna visa exakt samma (felaktiga) produkts saldo. Vi kräver
+  // därför en exakt matchning på productNumber/productId — annars null,
+  // vilket gör att badgen blir "?" istället för ett falskt saldo.
   async function resolveProductId(articleNr) {
-    if (idCache[articleNr]) return idCache[articleNr];
+    if (articleNr in idCache) return idCache[articleNr];
 
     const data = await apiGet(`/productsearch/search?q=${articleNr}&size=5`);
     const hit  = data?.products?.find(p =>
       p.productNumber === articleNr || String(p.productId) === articleNr
-    ) ?? data?.products?.[0];
+    );
 
-    const productId = hit?.productId ?? articleNr;
+    const productId = hit?.productId ?? null;
     idCache[articleNr] = productId;
     return productId;
   }
 
   // Steg 3: hämta lagersaldo
-  async function fetchStock(productId) {
+  function fetchStock(productId) {
     return apiGet(`/stockbalance/store/${STORE_ID}/${productId}/`);
   }
 
-  // Allt i ett: SB-URL → badge-data
+  // Allt i ett: SB-URL → badge-data (null → badge blir "?", se fillBadge)
   async function checkSBUrl(sbUrl) {
     const articleNr = articleNrFromUrl(sbUrl);
     if (!articleNr) return null;
     const productId = await resolveProductId(articleNr);
+    if (!productId) return null;
     return fetchStock(productId);
   }
 
@@ -253,14 +291,20 @@
     return el;
   }
 
+  // stock är null när vi inte kunnat slå upp produkten säkert (se
+  // resolveProductId) eller när själva API-anropet failade — hellre "?" än
+  // ett falskt saldo.
   function fillBadge(badge, stock) {
     if (!stock) {
       badge.className   = 'vbsb-badge vbsb-out';
       badge.textContent = '?';
       return;
     }
+    // isInStoreAssortment ignoreras medvetet — den betyder inte "finns här
+    // just nu", bara stock > 0 gör det.
     if (stock.stock > 0) {
       badge.className = 'vbsb-badge vbsb-yes';
+      // shelf är i formatet "hylla-hyllplan", t.ex. "03-07" → "S03 H07"
       const shelf = stock.shelf
         ? ' S' + stock.shelf.split('-')[0] + ' H' + stock.shelf.split('-')[1]
         : '';
@@ -271,12 +315,18 @@
     }
   }
 
-  // Extrahera SB-URL ur HTML
+  // Extrahera SB-URL ur en vinbetyget-sidas HTML. Vinbetygets eget "Nr på
+  // Systembolaget"-fält i texten är inte pålitligt (kan vara fel/förkortat)
+  // — vi läser alltid den riktiga länken till systembolaget.se/produkt/...
   function extractSBUrl(html) {
     return html.match(/https?:\/\/(?:www\.)?systembolaget\.se\/produkt\/[^"'\s]+/)?.[0] ?? null;
   }
 
   // ── Kör ───────────────────────────────────────────────────
+  // Körs på varje sidladdning. Två lägen beroende på URL-djup:
+  // - Produktsida (/<lista>/<vin>): en badge, SB-länken finns redan i DOM.
+  // - Listsida (/<lista>): en badge per vinlänk. Varje vinsida måste hämtas
+  //   separat (gmGet) för att hitta dess SB-länk, därför worker-poolen nedan.
   async function run() {
     if (!STORE_ID) return;
     document.querySelectorAll('.vbsb-badge').forEach(b => b.remove());
@@ -292,7 +342,8 @@
       fillBadge(badge, await checkSBUrl(sbA.href));
 
     } else {
-      // Listsida: deduplicera vinlänkar
+      // Listsida: deduplicera vinlänkar (samma vin kan länkas flera gånger,
+      // t.ex. bild + rubrik)
       const base = '/' + segs[0];
       const seen = new Set();
       const wineLinks = [...document.querySelectorAll('a[href]')].filter(a => {
@@ -317,7 +368,10 @@
         fillBadge(badge, await checkSBUrl(sbUrl));
       });
 
-      // 3 parallella workers
+      // 3 parallella workers delar på task-kön (index i är delad state,
+      // så det är säkert trots att workers kör konkurrent — varje worker
+      // drar nästa lediga index innan den awaitar). Höj antalet om
+      // topplistorna är korta, sänk om Systembolagets API börjar 429:a.
       let i = 0;
       const worker = async () => { while (i < tasks.length) await tasks[i++](); };
       await Promise.all([worker(), worker(), worker()]);
@@ -325,6 +379,8 @@
   }
 
   // ── Start ─────────────────────────────────────────────────
+  // Ingen sparad butik än → visa inställningspanelen automatiskt istället
+  // för att bara stå med tomma badges.
   if (!STORE_ID) {
     setTimeout(() => { panel.style.display = 'block'; }, 400);
   } else {
