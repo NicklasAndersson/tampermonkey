@@ -13,6 +13,8 @@
 // @connect      api-extern.systembolaget.se
 // @connect      vinbetyget.se
 // @run-at       document-idle
+// @downloadURL  https://raw.githubusercontent.com/NicklasAndersson/tampermonkey/main/vinbetyget.js
+// @updateURL    https://raw.githubusercontent.com/NicklasAndersson/tampermonkey/main/vinbetyget.js
 // ==/UserScript==
 
 (async function () {
