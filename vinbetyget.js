@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Vinbetyget × Systembolaget
-// @namespace    http://tampermonkey.net/
-// @version      1.3.0
+// @namespace    https://github.com/NicklasAndersson/tampermonkey
+// @version      1.3.1
 // @description  Visar lagerstatus i din Systembolaget-butik direkt på Vinbetygets topplistor
 // @match        https://vinbetyget.se/*
 // @match        https://systembolaget.wwn.se/*
