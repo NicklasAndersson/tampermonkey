@@ -1,9 +1,10 @@
 // ==UserScript==
 // @name         Vinbetyget × Systembolaget
 // @namespace    http://tampermonkey.net/
-// @version      1.2.1
+// @version      1.3.0
 // @description  Visar lagerstatus i din Systembolaget-butik direkt på Vinbetygets topplistor
 // @match        https://vinbetyget.se/*
+// @match        https://systembolaget.wwn.se/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @grant        GM_getValue
@@ -332,6 +333,10 @@
   async function run() {
     if (!STORE_ID) return;
     document.querySelectorAll('.vbsb-badge').forEach(b => b.remove());
+    if (isWwn) {
+      document.querySelectorAll('[data-vbsb]').forEach(e => delete e.dataset.vbsb);
+      return scanWwn();
+    }
 
     const segs = location.pathname.split('/').filter(Boolean);
 
@@ -379,6 +384,33 @@
       await Promise.all([worker(), worker(), worker()]);
     }
   }
+
+  // ── systembolaget.wwn.se ──────────────────────────────────
+  // Sidan är en SPA som renderar kort (sök, "visa fler", liknande, favoriter)
+  // och detaljvy dynamiskt, så vi observerar DOM:en. Varje kort/detaljvy har en
+  // favoritknapp med data-favorite-id = internt productId, precis vad
+  // stockbalance vill ha — inget productsearch-steg behövs.
+  const isWwn = location.hostname === 'systembolaget.wwn.se';
+
+  function scanWwn() {
+    if (!STORE_ID) return;
+    const tasks = [];
+    document.querySelectorAll('[data-favorite-id]:not([data-vbsb])').forEach(btn => {
+      const target = btn.closest('.card')?.querySelector('.specs')
+                  ?? btn.closest('.hero-info')?.querySelector('.facts');
+      if (!target) return; // t.ex. favoritkort som inte kunde hämtas
+      btn.dataset.vbsb = '1';
+      const badge = makeBadge();
+      target.append(badge);
+      tasks.push(async () => fillBadge(badge, await fetchStock(btn.dataset.favoriteId)));
+    });
+    // ponytail: 3 workers per scan, delas inte mellan scans; global kö om SB:s API börjar 429:a
+    let i = 0;
+    const worker = async () => { while (i < tasks.length) await tasks[i++](); };
+    return Promise.all([worker(), worker(), worker()]);
+  }
+
+  if (isWwn) new MutationObserver(scanWwn).observe(document.body, { childList: true, subtree: true });
 
   // ── Start ─────────────────────────────────────────────────
   // Ingen sparad butik än → visa inställningspanelen automatiskt istället

@@ -45,4 +45,4 @@ skillnad.
 
 | Fil             | Beskrivning                                                                                                                            |
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `vinbetyget.js` | Visar Systembolagets lagerstatus i din valda butik direkt på vinbetyget.se:s topplistor. Se kommentarer i filen för kända fallgropar i Systembolagets externa API. |
+| `vinbetyget.js` | Visar Systembolagets lagerstatus i din valda butik direkt på vinbetyget.se:s topplistor och på systembolaget.wwn.se (kort och detaljvy). Se kommentarer i filen för kända fallgropar i Systembolagets externa API. |
